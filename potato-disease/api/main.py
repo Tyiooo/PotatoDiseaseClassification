@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import numpy as np
@@ -20,33 +20,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MODEL = tf.saved_model.load("../models/1")
+MODEL = None
+try:
+    MODEL = tf.keras.models.load_model("../models/2.keras")
+    print("Model loaded successfully")
+except Exception as e:
+    print(f"Error loading model: {e}")
+    raise HTTPException(status_code=500, detail="Model loading failed.")
 
 CLASS_NAMES = ["Early Blight", "Late Blight", "Healthy"]
+
 
 @app.get("/ping")
 async def ping():
     return "Hello, I am alive"
 
+
 def read_file_as_image(data) -> np.ndarray:
     image = np.array(Image.open(BytesIO(data)))
     return image
 
+
 @app.post("/predict")
-async def predict(
-        file: UploadFile = File(...)
-):
-    image = read_file_as_image(await file.read())
+async def predict(file: UploadFile = File(...)):
+    # Логирование получения файла
+    print(f"Received file: {file.filename}, Content-Type: {file.content_type}")
+
+    if not file:
+        raise HTTPException(status_code=400, detail="No file was uploaded.")
+
+    # Проверка типа содержимого
+    if file.content_type not in ["image/jpeg", "image/png"]:
+        raise HTTPException(status_code=400, detail="Invalid file format. Only JPEG and PNG are supported.")
+
+    try:
+        image_data = await file.read()
+        # Логирование размера файла
+        print(f"File size: {len(image_data)} bytes")
+
+        # Попытка чтения изображения
+        image = read_file_as_image(image_data)
+        print(f"Image shape: {image.shape}")
+    except Exception as e:
+        print(f"Error: {e}")
+        raise HTTPException(status_code=400, detail=f"Error reading image file: {str(e)}")
+
     img_batch = np.expand_dims(image, 0)
 
     predictions = MODEL.predict(img_batch)
-
     predicted_class = CLASS_NAMES[np.argmax(predictions[0])]
     confidence = np.max(predictions[0])
+
     return {
         'class': predicted_class,
         'confidence': float(confidence)
     }
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host='localhost', port=8000)
